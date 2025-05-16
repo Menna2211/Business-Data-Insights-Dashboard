@@ -1,0 +1,671 @@
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+from io import StringIO
+import traceback
+from datetime import datetime
+import numpy as np
+
+# Configure page
+st.set_page_config(
+    page_title="Business Data Insights Dashboard",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Add custom CSS for better styling
+st.markdown("""
+<style>
+    .main .block-container {
+        padding-top: 2rem;
+        padding-bottom: 2rem;
+    }
+    .stMetric {
+        border-radius: 10px;
+        padding: 15px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+    .stButton>button {
+        width: 100%;
+        border-radius: 8px;
+        padding: 10px 24px;
+    }
+    .stRadio>div {
+        display: flex;
+        gap: 10px;
+    }
+    .stRadio>div[role="radiogroup"]>label {
+        padding: 8px 12px;
+        border-radius: 8px;
+        border: 1px solid #e0e0e0;
+    }
+    .stRadio>div[role="radiogroup"]>label:hover {
+        background-color: #f5f5f5;
+    }
+    .stRadio>div[role="radiogroup"]>label[data-baseweb="radio"]>div:first-child {
+        padding-right: 8px;
+    }
+    .st-expander {
+        border-radius: 8px;
+        border: 1px solid #e0e0e0;
+    }
+    .stAlert {
+        border-radius: 8px;
+    }
+    .tooltip {
+        position: relative;
+        display: inline-block;
+    }
+    .tooltip .tooltiptext {
+        visibility: hidden;
+        width: 200px;
+        background-color: #555;
+        color: #fff;
+        text-align: center;
+        border-radius: 6px;
+        padding: 5px;
+        position: absolute;
+        z-index: 1;
+        bottom: 125%;
+        left: 50%;
+        margin-left: -100px;
+        opacity: 0;
+        transition: opacity 0.3s;
+    }
+    .tooltip:hover .tooltiptext {
+        visibility: visible;
+        opacity: 1;
+    }
+    .welcome-container {
+        text-align: center; 
+        padding: 5rem 0;
+    }
+    .feature-card {
+        background: #f0f2f6; 
+        padding: 2rem; 
+        border-radius: 10px; 
+        text-align: left; 
+        margin: 0 auto; 
+        max-width: 800px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+def detect_column_types(df):
+    """Automatically detect column types (numeric, categorical, date)"""
+    numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
+    categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+    date_cols = [col for col in df.columns if pd.api.types.is_datetime64_any_dtype(df[col])]
+    
+    # Try to detect date columns that weren't automatically parsed
+    date_patterns = ['date', 'time', 'year', 'month', 'day']
+    for col in categorical_cols:
+        if any(pattern in col.lower() for pattern in date_patterns):
+            try:
+                df[col] = pd.to_datetime(df[col])
+                date_cols.append(col)
+                categorical_cols.remove(col)
+            except:
+                pass
+    
+    return {
+        'numeric': numeric_cols,
+        'categorical': categorical_cols,
+        'date': date_cols
+    }
+
+def load_data(uploaded_file):
+    """Load data with automatic format detection"""
+    try:
+        # Try multiple encodings and delimiters
+        encodings = ['utf-8', 'utf-8-sig', 'latin1']
+        delimiters = [',', ';', '\t']
+        
+        for encoding in encodings:
+            for delimiter in delimiters:
+                try:
+                    uploaded_file.seek(0)
+                    if uploaded_file.name.endswith('.xlsx'):
+                        df = pd.read_excel(uploaded_file)
+                    elif uploaded_file.name.endswith('.json'):
+                        df = pd.read_json(uploaded_file)
+                    else:
+                        if encoding == 'utf-8-sig':
+                            content = uploaded_file.read().decode(encoding)
+                            df = pd.read_csv(StringIO(content), delimiter=delimiter)
+                        else:
+                            df = pd.read_csv(uploaded_file, encoding=encoding, delimiter=delimiter)
+                    
+                    # Clean column names
+                    df.columns = [col.strip().replace(' ', '_').lower() for col in df.columns]
+                    return df
+                except:
+                    continue
+        
+        st.error("Failed to read file. Please check the format and try again.")
+        return None
+
+    except Exception as e:
+        st.error(f"Error loading file: {str(e)}")
+        st.text(traceback.format_exc())
+        return None
+
+def create_business_summary(df):
+    """Create a high-level business summary"""
+    st.header("📌 Executive Summary")
+    
+    # Calculate basic metrics
+    num_records = df.shape[0]
+    num_features = df.shape[1]
+    date_cols = [col for col in df.columns if pd.api.types.is_datetime64_any_dtype(df[col])]
+    has_dates = len(date_cols) > 0
+    
+    # Create summary cards with better formatting
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Total Records", f"{num_records:,}", help="Number of rows in your dataset")
+    with col2:
+        st.metric("Total Features", num_features, help="Number of columns in your dataset")
+    with col3:
+        st.metric("Time Period Covered", "Available" if has_dates else "Not Available", 
+                 help="Whether your data contains date/time information")
+    
+    # Add data quality indicators
+    st.subheader("Data Quality Check")
+    missing_values = df.isnull().sum().sum()
+    duplicate_rows = df.duplicated().sum()
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        completeness = 1 - (missing_values / (num_records * num_features))
+        st.metric("Data Completeness", f"{completeness*100:.1f}%", 
+                 help="Percentage of non-missing values in your dataset")
+        st.progress(min(1.0, max(0.0, completeness)))
+    with col2:
+        uniqueness = 1 - (duplicate_rows / num_records)
+        st.metric("Unique Records", f"{uniqueness*100:.1f}%", 
+                 help="Percentage of unique rows in your dataset")
+        st.progress(min(1.0, max(0.0, uniqueness)))
+    
+    # Add quick insights
+    st.subheader("Quick Insights")
+    if has_dates:
+        date_col = date_cols[0]
+        date_range = f"{df[date_col].min().strftime('%Y-%m-%d')} to {df[date_col].max().strftime('%Y-%m-%d')}"
+        st.info(f"📅 **Date Range**: Your data covers **{date_range}**")
+    
+    numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
+    if numeric_cols:
+        top_num = numeric_cols[0]
+        if len(df) > 1 and has_dates:
+            try:
+                growth = (df[top_num].iloc[-1] - df[top_num].iloc[0]) / df[top_num].iloc[0] * 100
+            except:
+                growth = 0
+        else:
+            growth = 0
+        
+        st.info(f"📊 **{top_num.replace('_', ' ').title()}**:\n"
+                f"- Average: {df[top_num].mean():,.2f}\n"
+                f"- Maximum: {df[top_num].max():,.2f}\n"
+                f"- Minimum: {df[top_num].min():,.2f}")
+        
+        if has_dates and len(df) > 1 and growth != 0:
+            st.info(f"📈 **Growth Trend**: {'↑' if growth > 0 else '↓'} {abs(growth):.1f}% over the period")
+
+def create_visualizations(df, col_types):
+    """Generate automatic visualizations with business focus"""
+    create_business_summary(df)
+    
+    # 1. Data Overview
+    with st.expander("🔍 Detailed Data Overview", expanded=False):
+        st.write(f"**Shape:** {df.shape[0]} rows × {df.shape[1]} columns")
+        
+        tab1, tab2, tab3 = st.tabs(["📋 Sample Data", "📊 Descriptive Stats", "⚠️ Missing Values"])
+        with tab1:
+            st.write("First 10 rows of your data:")
+            st.dataframe(df.head(10), use_container_width=True)
+        with tab2:
+            st.write("Statistical summary of your data:")
+            st.dataframe(df.describe(include='all').T.style.background_gradient(cmap='Blues'), 
+                        use_container_width=True)
+        with tab3:
+            st.write("Missing values in your data:")
+            missing_data = df.isnull().sum().to_frame(name="Missing Values")
+            missing_data["% Missing"] = (missing_data["Missing Values"] / len(df)) * 100
+            st.dataframe(missing_data.style.background_gradient(cmap='Reds'), 
+                        use_container_width=True)
+    
+    # 2. Key Performance Indicators (KPIs)
+    if col_types['numeric']:
+        st.header("📈 Key Performance Indicators")
+        st.write("Track and visualize your most important metrics over time.")
+        
+        selected_kpis = st.multiselect(
+            "Select KPIs to track (choose up to 4)", 
+            col_types['numeric'], 
+            default=col_types['numeric'][:min(4, len(col_types['numeric']))],
+            help="Select the numerical metrics you want to track as KPIs"
+        )
+        
+        if selected_kpis:
+            st.subheader("KPI Summary")
+            cols = st.columns(len(selected_kpis))
+            for i, kpi in enumerate(selected_kpis):
+                with cols[i]:
+                    if len(df) > 1 and col_types['date']:
+                        try:
+                            delta = (df[kpi].iloc[-1] - df[kpi].iloc[0]) / df[kpi].iloc[0] * 100
+                        except:
+                            delta = 0
+                    else:
+                        delta = 0
+                    
+                    # Enhanced metric display
+                    with st.container():
+                        st.markdown(f"**{kpi.replace('_', ' ').title()}**")
+                        st.markdown(f"<h3 style='margin-top:0; margin-bottom:0;'>{df[kpi].mean():,.2f}</h3>", 
+                                   unsafe_allow_html=True)
+                        if len(df) > 1 and delta != 0:
+                            st.markdown(f"<span style='color: {'green' if delta > 0 else 'red'};'>"
+                                       f"{'↑' if delta > 0 else '↓'} {abs(delta):.1f}%</span>", 
+                                       unsafe_allow_html=True)
+            
+            # Trend lines for selected KPIs
+            if col_types['date'] and len(selected_kpis) > 0:
+                st.subheader("KPI Trends Over Time")
+                date_col = col_types['date'][0]
+                fig = px.line(df, x=date_col, y=selected_kpis, 
+                             title="",
+                             labels={'value': 'Metric Value', 'variable': 'KPI'},
+                             template='plotly_white',
+                             height=500)
+                
+                # Add range slider if there are many data points
+                if len(df) > 30:
+                    fig.update_layout(
+                        xaxis=dict(
+                            rangeselector=dict(
+                                buttons=list([
+                                    dict(count=1, label="1m", step="month", stepmode="backward"),
+                                    dict(count=6, label="6m", step="month", stepmode="backward"),
+                                    dict(count=1, label="YTD", step="year", stepmode="todate"),
+                                    dict(count=1, label="1y", step="year", stepmode="backward"),
+                                    dict(step="all")
+                                ])
+                            ),
+                            rangeslider=dict(visible=True),
+                            type="date"
+                        )
+                    )
+                
+                st.plotly_chart(fig, use_container_width=True)
+    
+    # 3. Profitability and Financial Analysis
+    profit_related = [col for col in col_types['numeric'] if 'profit' in col.lower() or 'revenue' in col.lower() or 'margin' in col.lower()]
+    if profit_related and len(profit_related) > 0:
+        st.header("💰 Profitability Analysis")
+        st.write("Analyze your financial metrics and their relationships.")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            selected_profit = st.selectbox(
+                "Select financial metric", 
+                profit_related,
+                help="Choose a financial metric to analyze"
+            )
+            
+            if col_types['date']:
+                st.subheader(f"{selected_profit.replace('_', ' ').title()} Over Time")
+                fig = px.area(df, x=col_types['date'][0], y=selected_profit, 
+                             title="",
+                             template='plotly_white',
+                             height=400)
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.subheader(f"Distribution of {selected_profit.replace('_', ' ').title()}")
+                fig = px.histogram(df, x=selected_profit, 
+                                 title="",
+                                 template='plotly_white',
+                                 height=400)
+                st.plotly_chart(fig, use_container_width=True)
+        
+        with col2:
+            if len(profit_related) > 1:
+                st.subheader("Financial Metrics Correlation")
+                profit_corr = df[profit_related].corr()
+                fig = px.imshow(profit_corr, 
+                                text_auto=True, 
+                                title="",
+                                color_continuous_scale='RdYlGn',
+                                zmin=-1, zmax=1,
+                                height=400)
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("Add more financial metrics (like revenue, profit, margin) to see correlation analysis.")
+    
+    # 4. Customer/Product Segmentation with Pie Charts
+    if col_types['categorical'] and len(col_types['categorical']) > 0:
+        st.header("👥 Segmentation Analysis")
+        st.write("Explore how your data breaks down across different categories.")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            seg_col = st.selectbox(
+                "Select category to segment by", 
+                col_types['categorical'],
+                help="Choose a categorical column to analyze"
+            )
+        
+        with col2:
+            if col_types['numeric'] and len(col_types['numeric']) > 0:
+                value_col = st.selectbox(
+                    "Select metric to analyze", 
+                    col_types['numeric'],
+                    help="Choose a numerical metric to analyze across segments"
+                )
+        
+        if col_types['numeric'] and len(col_types['numeric']) > 0:
+            st.subheader("Segmentation Visualization")
+            
+            # Add visualization type selector with better labels
+            chart_type = st.radio(
+                "Choose visualization type", 
+                ["Bar Chart", "Pie Chart", "Treemap", "Sunburst"],
+                horizontal=True,
+                help="Select how you want to visualize the segmentation"
+            )
+            
+            seg_data = df.groupby(seg_col)[value_col].sum().sort_values(ascending=False).reset_index()
+            
+            if chart_type == "Bar Chart":
+                fig = px.bar(seg_data, 
+                            x=seg_col, 
+                            y=value_col,
+                            title="",
+                            labels={seg_col: seg_col.replace('_', ' ').title(), 
+                                   value_col: value_col.replace('_', ' ').title()},
+                            template='plotly_white',
+                            height=500)
+                st.plotly_chart(fig, use_container_width=True)
+            
+            elif chart_type == "Pie Chart":
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    fig = px.pie(seg_data, 
+                                names=seg_col, 
+                                values=value_col,
+                                title="",
+                                hole=0.3,
+                                template='plotly_white')
+                    st.plotly_chart(fig, use_container_width=True)
+                with col2:
+                    st.write("**Top Segments**")
+                    st.dataframe(seg_data.head(10), height=400)
+            
+            elif chart_type == "Treemap":
+                fig = px.treemap(seg_data, 
+                                path=[seg_col], 
+                                values=value_col,
+                                title="",
+                                template='plotly_white',
+                                height=500)
+                st.plotly_chart(fig, use_container_width=True)
+            
+            elif chart_type == "Sunburst":
+                # For sunburst, we need at least two categorical dimensions
+                other_cats = [col for col in col_types['categorical'] if col != seg_col]
+                if other_cats:
+                    second_cat = st.selectbox(
+                        "Select second category for hierarchy", 
+                        other_cats,
+                        help="Choose a second category to create a hierarchical view"
+                    )
+                    seg_data = df.groupby([seg_col, second_cat])[value_col].sum().reset_index()
+                    fig = px.sunburst(seg_data, 
+                                    path=[seg_col, second_cat], 
+                                    values=value_col,
+                                    title="",
+                                    template='plotly_white',
+                                    height=600)
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.warning("Sunburst chart requires at least two categorical columns. Add another category column to your data to use this visualization.")
+    
+    # 5. Geographic Analysis (if location data exists)
+    location_cols = [col for col in df.columns if 'country' in col.lower() or 'state' in col.lower() or 'city' in col.lower()]
+    if location_cols and len(location_cols) > 0 and col_types['numeric'] and len(col_types['numeric']) > 0:
+        st.header("🌍 Geographic Analysis")
+        st.write("Visualize your data geographically when location information is available.")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            loc_col = st.selectbox(
+                "Select location column", 
+                location_cols,
+                help="Choose the column that contains geographic information"
+            )
+        with col2:
+            metric_col = st.selectbox(
+                "Select metric to visualize", 
+                col_types['numeric'],
+                help="Choose a numerical metric to visualize on the map"
+            )
+        
+        loc_data = df.groupby(loc_col)[metric_col].sum().reset_index()
+        
+        # Add visualization type selector
+        geo_chart_type = st.radio(
+            "Select map visualization type", 
+            ["Choropleth Map", "Bar Chart", "Pie Chart"],
+            horizontal=True,
+            help="Choose how to visualize geographic distribution"
+        )
+        
+        if geo_chart_type == "Choropleth Map":
+            st.subheader(f"Geographic Distribution of {metric_col}")
+            # Try to plot as map if country codes are recognizable
+            try:
+                fig = px.choropleth(loc_data, 
+                                   locations=loc_col,
+                                   locationmode="country names",
+                                   color=metric_col,
+                                   hover_name=loc_col,
+                                   title="",
+                                   template='plotly_white',
+                                   height=600)
+                st.plotly_chart(fig, use_container_width=True)
+            except:
+                st.warning("Could not create map visualization. Showing bar chart instead.")
+                fig = px.bar(loc_data.sort_values(metric_col, ascending=False),
+                            x=loc_col, y=metric_col,
+                            title="",
+                            template='plotly_white',
+                            height=500)
+                st.plotly_chart(fig, use_container_width=True)
+        
+        elif geo_chart_type == "Bar Chart":
+            st.subheader(f"{metric_col} by {loc_col}")
+            fig = px.bar(loc_data.sort_values(metric_col, ascending=False),
+                        x=loc_col, y=metric_col,
+                        title="",
+                        template='plotly_white',
+                        height=500)
+            st.plotly_chart(fig, use_container_width=True)
+        
+        elif geo_chart_type == "Pie Chart":
+            st.subheader(f"Distribution of {metric_col} by {loc_col}")
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                fig = px.pie(loc_data, 
+                            names=loc_col, 
+                            values=metric_col,
+                            title="",
+                            hole=0.3,
+                            template='plotly_white')
+                st.plotly_chart(fig, use_container_width=True)
+            with col2:
+                st.write("**Top Locations**")
+                st.dataframe(loc_data.sort_values(metric_col, ascending=False).head(10), height=400)
+    
+    # 6. Time Series Forecasting
+    if col_types['date'] and len(col_types['date']) > 0 and col_types['numeric'] and len(col_types['numeric']) > 0:
+        st.header("🔮 Forecasting")
+        st.write("Generate simple forecasts for your time-series data.")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            date_col = st.selectbox(
+                "Select date column", 
+                col_types['date'],
+                help="Choose the column that contains date/time information"
+            )
+        with col2:
+            forecast_col = st.selectbox(
+                "Select metric to forecast", 
+                col_types['numeric'],
+                help="Choose a numerical metric to forecast"
+            )
+        
+        if st.button("Generate Forecast", help="Click to generate a 6-period forecast"):
+            with st.spinner("Creating forecast..."):
+                try:
+                    from statsmodels.tsa.arima.model import ARIMA
+                    
+                    ts_data = df.set_index(date_col)[forecast_col].dropna()
+                    if len(ts_data) > 10:
+                        model = ARIMA(ts_data, order=(1,1,1))
+                        model_fit = model.fit()
+                        forecast = model_fit.forecast(steps=6)  # 6 periods ahead
+                        
+                        fig = go.Figure()
+                        fig.add_trace(go.Scatter(
+                            x=ts_data.index,
+                            y=ts_data,
+                            name="Historical Data",
+                            line=dict(width=3)
+                        ))
+                        fig.add_trace(go.Scatter(
+                            x=pd.date_range(ts_data.index[-1], periods=7)[1:],
+                            y=forecast,
+                            name="Forecast",
+                            line=dict(dash='dot', width=3, color='red')
+                        ))
+                        fig.update_layout(
+                            title=f"6-Period Forecast for {forecast_col}",
+                            template='plotly_white',
+                            height=500,
+                            legend=dict(
+                                orientation="h",
+                                yanchor="bottom",
+                                y=1.02,
+                                xanchor="right",
+                                x=1
+                            )
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+                        
+                        # Show forecast values
+                        st.subheader("Forecast Values")
+                        forecast_df = pd.DataFrame({
+                            'Period': range(1, 7),
+                            'Date': pd.date_range(ts_data.index[-1], periods=7)[1:],
+                            'Forecast': forecast
+                        })
+                        st.dataframe(forecast_df.set_index('Period'), use_container_width=True)
+                    else:
+                        st.warning("Not enough data points for reliable forecasting. Need at least 10 observations.")
+                except Exception as e:
+                    st.error(f"Forecasting failed: {str(e)}")
+                    st.info("Try ensuring your time series has enough data points and isn't too irregular.")
+
+def main():
+    st.sidebar.title("Business Insights Dashboard")
+    st.sidebar.image("https://cdn-icons-png.flaticon.com/512/2092/2092693.png", width=80)
+    st.sidebar.markdown("""
+    <style>
+        .sidebar .sidebar-content {
+            padding-top: 1rem;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    st.sidebar.markdown("### Upload Your Data")
+    uploaded_file = st.sidebar.file_uploader(
+        "Choose a file", 
+        type=['csv', 'xlsx', 'json'],
+        help="Supported formats: CSV, Excel (xlsx), JSON"
+    )
+    
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### How to Use")
+    st.sidebar.info("""
+    1. Upload your business data file
+    2. Explore the automatic insights
+    3. Customize visualizations using the controls
+    4. Download any charts or tables as needed
+    """)
+    
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### Supported Data Types")
+    st.sidebar.info("""
+    - Financial metrics
+    - Sales transactions
+    - Customer demographics
+    - Operational data
+    - Marketing performance
+    - Time series data
+    """)
+    
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### About")
+    st.sidebar.info("""
+    This dashboard helps you quickly analyze business data and gain insights without coding.
+    """)
+    
+    if uploaded_file is not None:
+        with st.spinner('Analyzing your data...'):
+            df = load_data(uploaded_file)
+            
+        if df is not None:
+            # Add business-specific data enhancements
+            date_cols = [col for col in df.columns if pd.api.types.is_datetime64_any_dtype(df[col])]
+            if date_cols and len(date_cols) > 0:
+                try:
+                    df['year'] = df[date_cols[0]].dt.year
+                    df['quarter'] = df[date_cols[0]].dt.to_period('Q').astype(str)
+                    df['month'] = df[date_cols[0]].dt.month_name()
+                    df['weekday'] = df[date_cols[0]].dt.day_name()
+                except:
+                    pass
+            
+            col_types = detect_column_types(df)
+            create_visualizations(df, col_types)
+    else:
+        st.markdown("""
+        <div class="welcome-container">
+            <h1>Business Data Insights Dashboard</h1>
+            <p style="font-size: 1.2rem; color: #666;">
+                Upload your business data to get started with automatic analysis and visualization
+            </p>
+            <div style="margin: 3rem 0;">
+                <img src="https://cdn-icons-png.flaticon.com/512/3713/3713547.png" width="150">
+            </div>
+            <div class="feature-card">
+                <h3 style="margin-top: 0;">Key Features:</h3>
+                <ul style="columns: 2; column-gap: 2rem;">
+                    <li>📊 Automatic data profiling</li>
+                    <li>📈 KPI tracking and visualization</li>
+                    <li>💰 Profitability analysis</li>
+                    <li>👥 Customer/segment analysis</li>
+                    <li>🌍 Geographic visualization</li>
+                    <li>🔮 Time series forecasting</li>
+                    <li>📋 Interactive data exploration</li>
+                </ul>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+if __name__ == "__main__":
+    main()
