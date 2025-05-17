@@ -8,3 +8,4 @@ xlrd
 openpyxl
 python-pptx
 fpdf
+kaleido  
