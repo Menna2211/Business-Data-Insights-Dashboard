@@ -734,25 +734,28 @@ def export_to_excel(export_data):
     return output.getvalue()
 
 def export_to_pdf(export_data):
-    """Export all analysis to a PDF report"""
+    """Export all analysis to a PDF report with Unicode support"""
     from fpdf import FPDF
     
+    # Create PDF with Unicode support
     pdf = FPDF()
+    pdf.add_font('DejaVu', '', 'DejaVuSansCondensed.ttf', uni=True)
+    pdf.add_font('DejaVu', 'B', 'DejaVuSansCondensed-Bold.ttf', uni=True)
     pdf.set_auto_page_break(auto=True, margin=15)
     
     # Add title page
     pdf.add_page()
-    pdf.set_font('Arial', 'B', 16)
+    pdf.set_font('DejaVu', 'B', 16)
     pdf.cell(0, 10, 'Business Data Analysis Report', 0, 1, 'C')
     pdf.ln(10)
-    pdf.set_font('Arial', '', 12)
+    pdf.set_font('DejaVu', '', 12)
     pdf.cell(0, 10, f"Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", 0, 1, 'C')
     
     # Add summary section
     pdf.add_page()
-    pdf.set_font('Arial', 'B', 14)
+    pdf.set_font('DejaVu', 'B', 14)
     pdf.cell(0, 10, '1. Executive Summary', 0, 1)
-    pdf.set_font('Arial', '', 12)
+    pdf.set_font('DejaVu', '', 12)
     
     # Safely get summary values with defaults
     summary_values = {
@@ -774,40 +777,44 @@ def export_to_pdf(export_data):
     figures = export_data.get('figures', [])
     if figures:
         pdf.add_page()
-        pdf.set_font('Arial', 'B', 14)
+        pdf.set_font('DejaVu', 'B', 14)
         pdf.cell(0, 10, '2. Key Visualizations', 0, 1)
         
         for fig_name, fig in figures:
             try:
                 # Convert figure to PNG image
                 img_bytes = fig.to_image(format="png", scale=2)
-                img_io = BytesIO(img_bytes)
                 
-                # Add figure title
-                pdf.set_font('Arial', 'B', 12)
-                pdf.cell(0, 10, str(fig_name).replace('_', ' ').title(), 0, 1)
+                # Add figure title (ensure it's UTF-8 encoded)
+                pdf.set_font('DejaVu', 'B', 12)
+                title = str(fig_name).replace('_', ' ').title()
+                pdf.cell(0, 10, title.encode('latin-1', 'replace').decode('latin-1'), 0, 1)
                 
                 # Save image to temporary file
                 with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmpfile:
                     tmpfile.write(img_bytes)
-                    tmpfile.close()
-                    try:
-                        pdf.image(tmpfile.name, x=10, w=190)
-                    except Exception as e:
-                        pdf.cell(0, 10, f"Could not render image: {str(e)}", 0, 1)
-                    finally:
-                        os.unlink(tmpfile.name)
+                    tmpfile_path = tmpfile.name
+                
+                try:
+                    pdf.image(tmpfile_path, x=10, w=190)
+                except Exception as e:
+                    pdf.set_font('DejaVu', '', 10)
+                    pdf.cell(0, 10, "Could not render image", 0, 1)
+                finally:
+                    if os.path.exists(tmpfile_path):
+                        os.unlink(tmpfile_path)
                 
                 pdf.ln(5)
             except Exception as e:
-                pdf.cell(0, 10, f"Error processing figure: {str(e)}", 0, 1)
+                pdf.set_font('DejaVu', '', 10)
+                pdf.cell(0, 10, "Error processing figure", 0, 1)
                 continue
     
     # Add tables section only if tables exist
     tables = export_data.get('tables', {})
     if tables:
         pdf.add_page()
-        pdf.set_font('Arial', 'B', 14)
+        pdf.set_font('DejaVu', 'B', 14)
         pdf.cell(0, 10, '3. Data Tables', 0, 1)
         
         for table_name, table_data in tables.items():
@@ -815,38 +822,54 @@ def export_to_pdf(export_data):
                 continue
                 
             try:
-                pdf.set_font('Arial', 'B', 12)
-                pdf.cell(0, 10, str(table_name).replace('_', ' ').title(), 0, 1)
+                pdf.set_font('DejaVu', 'B', 12)
+                title = str(table_name).replace('_', ' ').title()
+                pdf.cell(0, 10, title.encode('latin-1', 'replace').decode('latin-1'), 0, 1)
                 
                 # Convert DataFrame to list of lists for PDF
-                pdf.set_font('Arial', '', 10)
-                col_widths = [pdf.get_string_width(str(h)) + 6 for h in table_data.columns][:3]  # Limit to 3 columns
+                pdf.set_font('DejaVu', '', 8)  # Smaller font for tables
+                
+                # Calculate column widths (limit to 3 columns)
+                headers = table_data.columns.tolist()[:3]
+                col_widths = [min(pdf.get_string_width(str(h)) + 6, 60) for h in headers]
                 
                 # Headers
-                headers = table_data.columns.tolist()
-                for i, header in enumerate(headers[:3]):  # Limit to 3 columns
-                    pdf.cell(col_widths[i] if i < len(col_widths) else 40, 10, str(header), 1)
+                for i, header in enumerate(headers):
+                    header_text = str(header).encode('latin-1', 'replace').decode('latin-1')
+                    pdf.cell(col_widths[i], 10, header_text[:20], 1)  # Limit header length
                 pdf.ln()
                 
                 # Data rows (limit to 50 rows for PDF)
                 for _, row in table_data.head(50).iterrows():
-                    for i, col in enumerate(headers[:3]):  # Limit to 3 columns
-                        cell_value = str(row[col])[:30]  # Limit cell content
-                        pdf.cell(col_widths[i] if i < len(col_widths) else 40, 10, cell_value, 1)
+                    for i, col in enumerate(headers):
+                        cell_value = str(row[col])[:20]  # Limit cell content
+                        cell_value = cell_value.encode('latin-1', 'replace').decode('latin-1')
+                        pdf.cell(col_widths[i], 10, cell_value, 1)
                     pdf.ln()
                 
                 pdf.ln(5)
             except Exception as e:
-                pdf.cell(0, 10, f"Error processing table {table_name}: {str(e)}", 0, 1)
+                pdf.set_font('DejaVu', '', 10)
+                pdf.cell(0, 10, "Error processing table", 0, 1)
                 continue
     
-    # Save PDF to buffer
+    # Save PDF to buffer with error handling
     pdf_output = BytesIO()
     try:
-        pdf_output.write(pdf.output(dest='S').encode('latin1'))
+        pdf_content = pdf.output(dest='S').encode('latin-1', 'replace')
+        pdf_output.write(pdf_content)
         return pdf_output.getvalue()
     except Exception as e:
-        raise Exception(f"Failed to generate PDF: {str(e)}")
+        # Fallback to simple PDF if encoding fails
+        pdf_output = BytesIO()
+        pdf_fallback = FPDF()
+        pdf_fallback.add_page()
+        pdf_fallback.set_font('Arial', 'B', 16)
+        pdf_fallback.cell(0, 10, 'PDF Generation Error', 0, 1)
+        pdf_fallback.set_font('Arial', '', 12)
+        pdf_fallback.multi_cell(0, 10, "Could not generate full report due to character encoding issues.")
+        pdf_output.write(pdf_fallback.output(dest='S').encode('latin-1'))
+        return pdf_output.getvalue()
 
 def export_to_ppt(export_data):
     """Export key insights to a PowerPoint presentation"""
