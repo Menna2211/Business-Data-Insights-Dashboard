@@ -6,3 +6,5 @@ statsmodels
 matplotlib
 xlrd
 openpyxl
+python-pptx
+fpdf
