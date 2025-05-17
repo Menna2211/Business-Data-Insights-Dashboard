@@ -2,10 +2,16 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from io import StringIO
+from io import StringIO, BytesIO
 import traceback
 from datetime import datetime
 import numpy as np
+import base64
+from pptx import Presentation
+from pptx.util import Inches
+from fpdf import FPDF
+import tempfile
+import os
 
 # Configure page
 st.set_page_config(
@@ -88,6 +94,10 @@ st.markdown("""
         text-align: left; 
         margin: 0 auto; 
         max-width: 800px;
+    }
+    .export-btn {
+        margin-top: 1rem;
+        margin-bottom: 1rem;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -221,8 +231,6 @@ def create_business_summary(df):
                 growth = (df[top_num].iloc[-1] - df[top_num].iloc[0]) / df[top_num].iloc[0] * 100
             except:
                 growth = 0
-        else:
-            growth = 0
         
         st.info(f"📊 **{top_num.replace('_', ' ').title()}**:\n"
                 f"- Average: {df[top_num].mean():,.2f}\n"
@@ -234,6 +242,20 @@ def create_business_summary(df):
 
 def create_visualizations(df, col_types):
     """Generate automatic visualizations with business focus"""
+    # Store all figures and data for export
+    export_data = {
+        'figures': [],
+        'tables': {},
+        'summary': {}
+    }
+    
+    # Create summary metrics for export
+    export_data['summary']['num_records'] = df.shape[0]
+    export_data['summary']['num_features'] = df.shape[1]
+    export_data['summary']['date_cols'] = [col for col in df.columns if pd.api.types.is_datetime64_any_dtype(df[col])]
+    export_data['summary']['missing_values'] = df.isnull().sum().sum()
+    export_data['summary']['duplicate_rows'] = df.duplicated().sum()
+    
     create_business_summary(df)
     
     # 1. Data Overview
@@ -244,16 +266,20 @@ def create_visualizations(df, col_types):
         with tab1:
             st.write("First 10 rows of your data:")
             st.dataframe(df.head(10), use_container_width=True)
+            export_data['tables']['sample_data'] = df.head(10)
         with tab2:
             st.write("Statistical summary of your data:")
-            st.dataframe(df.describe(include='all').T.style.background_gradient(cmap='Blues'), 
+            desc_stats = df.describe(include='all').T
+            st.dataframe(desc_stats.style.background_gradient(cmap='Blues'), 
                         use_container_width=True)
+            export_data['tables']['descriptive_stats'] = desc_stats
         with tab3:
             st.write("Missing values in your data:")
             missing_data = df.isnull().sum().to_frame(name="Missing Values")
             missing_data["% Missing"] = (missing_data["Missing Values"] / len(df)) * 100
             st.dataframe(missing_data.style.background_gradient(cmap='Reds'), 
                         use_container_width=True)
+            export_data['tables']['missing_values'] = missing_data
     
     # 2. Key Performance Indicators (KPIs)
     if col_types['numeric']:
@@ -319,6 +345,7 @@ def create_visualizations(df, col_types):
                     )
                 
                 st.plotly_chart(fig, use_container_width=True)
+                export_data['figures'].append(('kpi_trends', fig))
     
     # 3. Profitability and Financial Analysis
     profit_related = [col for col in col_types['numeric'] if 'profit' in col.lower() or 'revenue' in col.lower() or 'margin' in col.lower()]
@@ -341,6 +368,7 @@ def create_visualizations(df, col_types):
                              template='plotly_white',
                              height=400)
                 st.plotly_chart(fig, use_container_width=True)
+                export_data['figures'].append(('profit_trend', fig))
             else:
                 st.subheader(f"Distribution of {selected_profit.replace('_', ' ').title()}")
                 fig = px.histogram(df, x=selected_profit, 
@@ -348,6 +376,7 @@ def create_visualizations(df, col_types):
                                  template='plotly_white',
                                  height=400)
                 st.plotly_chart(fig, use_container_width=True)
+                export_data['figures'].append(('profit_distribution', fig))
         
         with col2:
             if len(profit_related) > 1:
@@ -360,6 +389,8 @@ def create_visualizations(df, col_types):
                                 zmin=-1, zmax=1,
                                 height=400)
                 st.plotly_chart(fig, use_container_width=True)
+                export_data['figures'].append(('profit_correlation', fig))
+                export_data['tables']['profit_correlation'] = profit_corr
             else:
                 st.info("Add more financial metrics (like revenue, profit, margin) to see correlation analysis.")
     
@@ -396,6 +427,7 @@ def create_visualizations(df, col_types):
             )
             
             seg_data = df.groupby(seg_col)[value_col].sum().sort_values(ascending=False).reset_index()
+            export_data['tables']['segmentation_data'] = seg_data
             
             if chart_type == "Bar Chart":
                 fig = px.bar(seg_data, 
@@ -407,6 +439,7 @@ def create_visualizations(df, col_types):
                             template='plotly_white',
                             height=500)
                 st.plotly_chart(fig, use_container_width=True)
+                export_data['figures'].append(('segmentation_bar', fig))
             
             elif chart_type == "Pie Chart":
                 col1, col2 = st.columns([3, 1])
@@ -418,6 +451,7 @@ def create_visualizations(df, col_types):
                                 hole=0.3,
                                 template='plotly_white')
                     st.plotly_chart(fig, use_container_width=True)
+                    export_data['figures'].append(('segmentation_pie', fig))
                 with col2:
                     st.write("**Top Segments**")
                     st.dataframe(seg_data.head(10), height=400)
@@ -430,6 +464,7 @@ def create_visualizations(df, col_types):
                                 template='plotly_white',
                                 height=500)
                 st.plotly_chart(fig, use_container_width=True)
+                export_data['figures'].append(('segmentation_treemap', fig))
             
             elif chart_type == "Sunburst":
                 # For sunburst, we need at least two categorical dimensions
@@ -448,6 +483,7 @@ def create_visualizations(df, col_types):
                                     template='plotly_white',
                                     height=600)
                     st.plotly_chart(fig, use_container_width=True)
+                    export_data['figures'].append(('segmentation_sunburst', fig))
                 else:
                     st.warning("Sunburst chart requires at least two categorical columns. Add another category column to your data to use this visualization.")
     
@@ -472,6 +508,7 @@ def create_visualizations(df, col_types):
             )
         
         loc_data = df.groupby(loc_col)[metric_col].sum().reset_index()
+        export_data['tables']['geographic_data'] = loc_data
         
         # Add visualization type selector
         geo_chart_type = st.radio(
@@ -494,6 +531,7 @@ def create_visualizations(df, col_types):
                                    template='plotly_white',
                                    height=600)
                 st.plotly_chart(fig, use_container_width=True)
+                export_data['figures'].append(('geo_choropleth', fig))
             except:
                 st.warning("Could not create map visualization. Showing bar chart instead.")
                 fig = px.bar(loc_data.sort_values(metric_col, ascending=False),
@@ -502,6 +540,7 @@ def create_visualizations(df, col_types):
                             template='plotly_white',
                             height=500)
                 st.plotly_chart(fig, use_container_width=True)
+                export_data['figures'].append(('geo_bar', fig))
         
         elif geo_chart_type == "Bar Chart":
             st.subheader(f"{metric_col} by {loc_col}")
@@ -511,6 +550,7 @@ def create_visualizations(df, col_types):
                         template='plotly_white',
                         height=500)
             st.plotly_chart(fig, use_container_width=True)
+            export_data['figures'].append(('geo_bar', fig))
         
         elif geo_chart_type == "Pie Chart":
             st.subheader(f"Distribution of {metric_col} by {loc_col}")
@@ -523,6 +563,7 @@ def create_visualizations(df, col_types):
                             hole=0.3,
                             template='plotly_white')
                 st.plotly_chart(fig, use_container_width=True)
+                export_data['figures'].append(('geo_pie', fig))
             with col2:
                 st.write("**Top Locations**")
                 st.dataframe(loc_data.sort_values(metric_col, ascending=False).head(10), height=400)
@@ -583,6 +624,7 @@ def create_visualizations(df, col_types):
                             )
                         )
                         st.plotly_chart(fig, use_container_width=True)
+                        export_data['figures'].append(('forecast', fig))
                         
                         # Show forecast values
                         st.subheader("Forecast Values")
@@ -592,11 +634,253 @@ def create_visualizations(df, col_types):
                             'Forecast': forecast
                         })
                         st.dataframe(forecast_df.set_index('Period'), use_container_width=True)
+                        export_data['tables']['forecast_values'] = forecast_df
                     else:
                         st.warning("Not enough data points for reliable forecasting. Need at least 10 observations.")
                 except Exception as e:
                     st.error(f"Forecasting failed: {str(e)}")
                     st.info("Try ensuring your time series has enough data points and isn't too irregular.")
+    
+    # Export functionality
+    st.markdown("---")
+    st.header("📤 Export Analysis")
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown("### Excel Export")
+        st.write("Download all analysis as an Excel workbook with multiple sheets")
+        if st.button("Export to Excel", key="excel_export"):
+            with st.spinner("Preparing Excel export..."):
+                try:
+                    excel_buffer = export_to_excel(export_data)
+                    st.success("Excel file ready for download!")
+                    st.download_button(
+                        label="Download Excel File",
+                        data=excel_buffer,
+                        file_name="business_analysis.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                except Exception as e:
+                    st.error(f"Error creating Excel file: {str(e)}")
+    
+    with col2:
+        st.markdown("### PDF Export")
+        st.write("Create a PDF report with all visualizations and insights")
+        if st.button("Export to PDF", key="pdf_export"):
+            with st.spinner("Preparing PDF report..."):
+                try:
+                    pdf_buffer = export_to_pdf(export_data)
+                    st.success("PDF report ready for download!")
+                    st.download_button(
+                        label="Download PDF Report",
+                        data=pdf_buffer,
+                        file_name="business_analysis.pdf",
+                        mime="application/pdf"
+                    )
+                except Exception as e:
+                    st.error(f"Error creating PDF: {str(e)}")
+    
+    with col3:
+        st.markdown("### PowerPoint Export")
+        st.write("Generate a PowerPoint presentation with key insights")
+        if st.button("Export to PowerPoint", key="ppt_export"):
+            with st.spinner("Preparing PowerPoint..."):
+                try:
+                    ppt_buffer = export_to_ppt(export_data)
+                    st.success("PowerPoint ready for download!")
+                    st.download_button(
+                        label="Download PowerPoint",
+                        data=ppt_buffer,
+                        file_name="business_analysis.pptx",
+                        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                    )
+                except Exception as e:
+                    st.error(f"Error creating PowerPoint: {str(e)}")
+
+def export_to_excel(export_data):
+    """Export all analysis to an Excel workbook"""
+    output = BytesIO()
+    writer = pd.ExcelWriter(output, engine='xlsxwriter')
+    
+    # Write summary data
+    summary_df = pd.DataFrame({
+        'Metric': ['Total Records', 'Total Features', 'Missing Values', 'Duplicate Rows'],
+        'Value': [
+            export_data['summary']['num_records'],
+            export_data['summary']['num_features'],
+            export_data['summary']['missing_values'],
+            export_data['summary']['duplicate_rows']
+        ]
+    })
+    summary_df.to_excel(writer, sheet_name='Summary', index=False)
+    
+    # Write all tables to separate sheets
+    for sheet_name, table_data in export_data['tables'].items():
+        if isinstance(table_data, pd.DataFrame):
+            table_data.to_excel(writer, sheet_name=sheet_name, index=False)
+    
+    # Save figures as images and add to Excel
+    workbook = writer.book
+    for i, (fig_name, fig) in enumerate(export_data['figures']):
+        # Create a temporary image file
+        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmpfile:
+            fig.write_image(tmpfile.name, scale=2)
+            
+            # Add worksheet for the figure
+            worksheet = workbook.add_worksheet(fig_name[:30])  # Limit sheet name length
+            
+            # Insert the image
+            worksheet.insert_image('A1', tmpfile.name)
+            
+            # Delete the temporary file
+            os.unlink(tmpfile.name)
+    
+    writer.close()
+    return output.getvalue()
+
+def export_to_pdf(export_data):
+    """Export all analysis to a PDF report"""
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    
+    # Add title page
+    pdf.add_page()
+    pdf.set_font('Arial', 'B', 16)
+    pdf.cell(0, 10, 'Business Data Analysis Report', 0, 1, 'C')
+    pdf.ln(10)
+    pdf.set_font('Arial', '', 12)
+    pdf.cell(0, 10, f"Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", 0, 1, 'C')
+    
+    # Add summary section
+    pdf.add_page()
+    pdf.set_font('Arial', 'B', 14)
+    pdf.cell(0, 10, '1. Executive Summary', 0, 1)
+    pdf.set_font('Arial', '', 12)
+    
+    summary_text = f"""
+    Total Records: {export_data['summary']['num_records']:,}
+    Total Features: {export_data['summary']['num_features']}
+    Missing Values: {export_data['summary']['missing_values']}
+    Duplicate Rows: {export_data['summary']['duplicate_rows']}
+    """
+    pdf.multi_cell(0, 10, summary_text)
+    
+    # Add figures
+    pdf.add_page()
+    pdf.set_font('Arial', 'B', 14)
+    pdf.cell(0, 10, '2. Key Visualizations', 0, 1)
+    
+    for fig_name, fig in export_data['figures']:
+        # Create a temporary image file
+        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmpfile:
+            fig.write_image(tmpfile.name, scale=2)
+            
+            # Add figure to PDF
+            pdf.set_font('Arial', 'B', 12)
+            pdf.cell(0, 10, fig_name.replace('_', ' ').title(), 0, 1)
+            pdf.image(tmpfile.name, x=10, w=190)
+            pdf.ln(5)
+            
+            # Delete the temporary file
+            os.unlink(tmpfile.name)
+    
+    # Add tables
+    pdf.add_page()
+    pdf.set_font('Arial', 'B', 14)
+    pdf.cell(0, 10, '3. Data Tables', 0, 1)
+    
+    for table_name, table_data in export_data['tables'].items():
+        if isinstance(table_data, pd.DataFrame):
+            pdf.set_font('Arial', 'B', 12)
+            pdf.cell(0, 10, table_name.replace('_', ' ').title(), 0, 1)
+            
+            # Convert DataFrame to list of lists for PDF
+            pdf.set_font('Arial', '', 10)
+            col_widths = [40, 40, 40]  # Adjust as needed
+            
+            # Headers
+            headers = table_data.columns.tolist()
+            for i, header in enumerate(headers):
+                pdf.cell(col_widths[i], 10, str(header), 1)
+            pdf.ln()
+            
+            # Data rows
+            for _, row in table_data.iterrows():
+                for i, col in enumerate(headers):
+                    pdf.cell(col_widths[i], 10, str(row[col]), 1)
+                pdf.ln()
+            
+            pdf.ln(5)
+    
+    # Save PDF to buffer
+    pdf_buffer = BytesIO()
+    pdf_buffer.write(pdf.output(dest='S').encode('latin1'))
+    return pdf_buffer.getvalue()
+
+def export_to_ppt(export_data):
+    """Export key insights to a PowerPoint presentation"""
+    prs = Presentation()
+    
+    # Add title slide
+    title_slide_layout = prs.slide_layouts[0]
+    slide = prs.slides.add_slide(title_slide_layout)
+    title = slide.shapes.title
+    subtitle = slide.placeholders[1]
+    title.text = "Business Data Insights"
+    subtitle.text = f"Generated on {datetime.now().strftime('%Y-%m-%d')}"
+    
+    # Add summary slide
+    bullet_slide_layout = prs.slide_layouts[1]
+    slide = prs.slides.add_slide(bullet_slide_layout)
+    shapes = slide.shapes
+    title_shape = shapes.title
+    body_shape = shapes.placeholders[1]
+    title_shape.text = 'Executive Summary'
+    
+    tf = body_shape.text_frame
+    tf.text = 'Key Metrics:'
+    
+    p = tf.add_paragraph()
+    p.text = f"• Total Records: {export_data['summary']['num_records']:,}"
+    p.level = 1
+    
+    p = tf.add_paragraph()
+    p.text = f"• Total Features: {export_data['summary']['num_features']}"
+    p.level = 1
+    
+    p = tf.add_paragraph()
+    p.text = f"• Missing Values: {export_data['summary']['missing_values']}"
+    p.level = 1
+    
+    p = tf.add_paragraph()
+    p.text = f"• Duplicate Rows: {export_data['summary']['duplicate_rows']}"
+    p.level = 1
+    
+    # Add figures (limit to 5 most important ones)
+    for fig_name, fig in export_data['figures'][:5]:
+        # Create a temporary image file
+        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmpfile:
+            fig.write_image(tmpfile.name, scale=2)
+            
+            # Add slide for the figure
+            blank_slide_layout = prs.slide_layouts[6]
+            slide = prs.slides.add_slide(blank_slide_layout)
+            
+            # Add title
+            txBox = slide.shapes.add_textbox(Inches(0.5), Inches(0.5), Inches(9), Inches(0.5))
+            tf = txBox.text_frame
+            tf.text = fig_name.replace('_', ' ').title()
+            
+            # Add image
+            slide.shapes.add_picture(tmpfile.name, Inches(1), Inches(1.5), Inches(8), Inches(5))
+            
+            # Delete the temporary file
+            os.unlink(tmpfile.name)
+    
+    # Save PowerPoint to buffer
+    ppt_buffer = BytesIO()
+    prs.save(ppt_buffer)
+    return ppt_buffer.getvalue()
 
 def main():
     st.sidebar.title("Business Insights Dashboard")
@@ -680,6 +964,7 @@ def main():
                     <li>🌍 Geographic visualization</li>
                     <li>🔮 Time series forecasting</li>
                     <li>📋 Interactive data exploration</li>
+                    <li>📤 Export to Excel, PDF, PowerPoint</li>
                 </ul>
             </div>
         </div>
