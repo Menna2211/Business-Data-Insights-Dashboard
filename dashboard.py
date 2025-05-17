@@ -700,46 +700,43 @@ def create_visualizations(df, col_types):
 def export_to_excel(export_data):
     """Export all analysis to an Excel workbook"""
     output = BytesIO()
-    writer = pd.ExcelWriter(output, engine='xlsxwriter')
-    
-    # Write summary data
-    summary_df = pd.DataFrame({
-        'Metric': ['Total Records', 'Total Features', 'Missing Values', 'Duplicate Rows'],
-        'Value': [
-            export_data['summary']['num_records'],
-            export_data['summary']['num_features'],
-            export_data['summary']['missing_values'],
-            export_data['summary']['duplicate_rows']
-        ]
-    })
-    summary_df.to_excel(writer, sheet_name='Summary', index=False)
-    
-    # Write all tables to separate sheets
-    for sheet_name, table_data in export_data['tables'].items():
-        if isinstance(table_data, pd.DataFrame):
-            table_data.to_excel(writer, sheet_name=sheet_name, index=False)
-    
-    # Save figures as images and add to Excel
-    workbook = writer.book
-    for i, (fig_name, fig) in enumerate(export_data['figures']):
-        # Create a temporary image file
-        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmpfile:
-            fig.write_image(tmpfile.name, scale=2)
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        # Write summary data
+        summary_df = pd.DataFrame({
+            'Metric': ['Total Records', 'Total Features', 'Missing Values', 'Duplicate Rows'],
+            'Value': [
+                export_data['summary']['num_records'],
+                export_data['summary']['num_features'],
+                export_data['summary']['missing_values'],
+                export_data['summary']['duplicate_rows']
+            ]
+        })
+        summary_df.to_excel(writer, sheet_name='Summary', index=False)
+        
+        # Write all tables to separate sheets
+        for sheet_name, table_data in export_data['tables'].items():
+            if isinstance(table_data, pd.DataFrame):
+                table_data.to_excel(writer, sheet_name=sheet_name[:31], index=False)  # Limit sheet name to 31 chars
+        
+        # Save figures as images and add to Excel
+        workbook = writer.book
+        for i, (fig_name, fig) in enumerate(export_data['figures']):
+            # Convert figure to PNG image
+            img_bytes = fig.to_image(format="png", scale=2)
+            img_io = BytesIO(img_bytes)
             
             # Add worksheet for the figure
             worksheet = workbook.add_worksheet(fig_name[:30])  # Limit sheet name length
             
             # Insert the image
-            worksheet.insert_image('A1', tmpfile.name)
-            
-            # Delete the temporary file
-            os.unlink(tmpfile.name)
+            worksheet.insert_image('A1', fig_name, {'image_data': img_io})
     
-    writer.close()
     return output.getvalue()
 
 def export_to_pdf(export_data):
     """Export all analysis to a PDF report"""
+    from fpdf import FPDF
+    
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     
@@ -771,18 +768,22 @@ def export_to_pdf(export_data):
     pdf.cell(0, 10, '2. Key Visualizations', 0, 1)
     
     for fig_name, fig in export_data['figures']:
-        # Create a temporary image file
+        # Convert figure to PNG image
+        img_bytes = fig.to_image(format="png", scale=2)
+        img_io = BytesIO(img_bytes)
+        
+        # Add figure to PDF
+        pdf.set_font('Arial', 'B', 12)
+        pdf.cell(0, 10, fig_name.replace('_', ' ').title(), 0, 1)
+        
+        # Save image to temporary file
         with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmpfile:
-            fig.write_image(tmpfile.name, scale=2)
-            
-            # Add figure to PDF
-            pdf.set_font('Arial', 'B', 12)
-            pdf.cell(0, 10, fig_name.replace('_', ' ').title(), 0, 1)
+            tmpfile.write(img_bytes)
+            tmpfile.close()
             pdf.image(tmpfile.name, x=10, w=190)
-            pdf.ln(5)
-            
-            # Delete the temporary file
             os.unlink(tmpfile.name)
+        
+        pdf.ln(5)
     
     # Add tables
     pdf.add_page()
@@ -804,8 +805,8 @@ def export_to_pdf(export_data):
                 pdf.cell(col_widths[i], 10, str(header), 1)
             pdf.ln()
             
-            # Data rows
-            for _, row in table_data.iterrows():
+            # Data rows (limit to 50 rows for PDF)
+            for _, row in table_data.head(50).iterrows():
                 for i, col in enumerate(headers):
                     pdf.cell(col_widths[i], 10, str(row[col]), 1)
                 pdf.ln()
@@ -813,12 +814,15 @@ def export_to_pdf(export_data):
             pdf.ln(5)
     
     # Save PDF to buffer
-    pdf_buffer = BytesIO()
-    pdf_buffer.write(pdf.output(dest='S').encode('latin1'))
-    return pdf_buffer.getvalue()
+    pdf_output = BytesIO()
+    pdf_output.write(pdf.output(dest='S').encode('latin1'))
+    return pdf_output.getvalue()
 
 def export_to_ppt(export_data):
     """Export key insights to a PowerPoint presentation"""
+    from pptx import Presentation
+    from pptx.util import Inches
+    
     prs = Presentation()
     
     # Add title slide
@@ -858,23 +862,25 @@ def export_to_ppt(export_data):
     
     # Add figures (limit to 5 most important ones)
     for fig_name, fig in export_data['figures'][:5]:
-        # Create a temporary image file
+        # Convert figure to PNG image
+        img_bytes = fig.to_image(format="png", scale=2)
+        
+        # Add slide for the figure
+        blank_slide_layout = prs.slide_layouts[6]
+        slide = prs.slides.add_slide(blank_slide_layout)
+        
+        # Add title
+        txBox = slide.shapes.add_textbox(Inches(0.5), Inches(0.5), Inches(9), Inches(0.5))
+        tf = txBox.text_frame
+        tf.text = fig_name.replace('_', ' ').title()
+        
+        # Save image to temporary file
         with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmpfile:
-            fig.write_image(tmpfile.name, scale=2)
-            
-            # Add slide for the figure
-            blank_slide_layout = prs.slide_layouts[6]
-            slide = prs.slides.add_slide(blank_slide_layout)
-            
-            # Add title
-            txBox = slide.shapes.add_textbox(Inches(0.5), Inches(0.5), Inches(9), Inches(0.5))
-            tf = txBox.text_frame
-            tf.text = fig_name.replace('_', ' ').title()
+            tmpfile.write(img_bytes)
+            tmpfile.close()
             
             # Add image
             slide.shapes.add_picture(tmpfile.name, Inches(1), Inches(1.5), Inches(8), Inches(5))
-            
-            # Delete the temporary file
             os.unlink(tmpfile.name)
     
     # Save PowerPoint to buffer
