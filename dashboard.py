@@ -118,33 +118,51 @@ def detect_column_types(df):
 def load_data(uploaded_file):
     """Load data with automatic format detection"""
     try:
-        # Try multiple encodings and delimiters
-        encodings = ['utf-8', 'utf-8-sig', 'latin1']
-        delimiters = [',', ';', '\t']
+        # Get file extension
+        file_extension = uploaded_file.name.split('.')[-1].lower()
         
-        for encoding in encodings:
-            for delimiter in delimiters:
+        # Reset file pointer
+        uploaded_file.seek(0)
+        
+        if file_extension == 'xlsx':
+            try:
+                # First try with openpyxl (modern Excel files)
+                df = pd.read_excel(uploaded_file, engine='openpyxl')
+            except:
+                try:
+                    # Fall back to xlrd for older Excel files
+                    df = pd.read_excel(uploaded_file, engine='xlrd')
+                except Exception as e:
+                    st.error(f"Failed to read Excel file: {str(e)}")
+                    st.info("Please ensure: 1) File is not password protected 2) It's a valid .xlsx file 3) File is not corrupted")
+                    return None
+        elif file_extension == 'json':
+            df = pd.read_json(uploaded_file)
+        else:  # For CSV and other text files
+            # Try common encodings
+            encodings = ['utf-8', 'utf-8-sig', 'latin1']
+            for encoding in encodings:
                 try:
                     uploaded_file.seek(0)
-                    if uploaded_file.name.endswith('.xlsx'):
-                        df = pd.read_excel(uploaded_file)
-                    elif uploaded_file.name.endswith('.json'):
-                        df = pd.read_json(uploaded_file)
-                    else:
-                        if encoding == 'utf-8-sig':
-                            content = uploaded_file.read().decode(encoding)
+                    content = uploaded_file.read().decode(encoding)
+                    # Try common delimiters
+                    for delimiter in [',', ';', '\t']:
+                        try:
                             df = pd.read_csv(StringIO(content), delimiter=delimiter)
-                        else:
-                            df = pd.read_csv(uploaded_file, encoding=encoding, delimiter=delimiter)
-                    
-                    # Clean column names
-                    df.columns = [col.strip().replace(' ', '_').lower() for col in df.columns]
-                    return df
+                            break
+                        except:
+                            continue
+                    break
                 except:
                     continue
         
-        st.error("Failed to read file. Please check the format and try again.")
-        return None
+        # Clean column names if we successfully loaded data
+        if 'df' in locals():
+            df.columns = [col.strip().replace(' ', '_').lower() for col in df.columns]
+            return df
+        else:
+            st.error("Failed to read file. Please check the format and try again.")
+            return None
 
     except Exception as e:
         st.error(f"Error loading file: {str(e)}")
